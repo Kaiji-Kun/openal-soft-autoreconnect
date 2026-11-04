@@ -54,6 +54,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1097,6 +1098,9 @@ auto UpdateDeviceParams(al::Device *device, const al::span<const int> attrList) 
         WARN("Missing attributes for loopback device");
         return ALC_INVALID_VALUE;
     }
+    /* Auto-reopen patch: remember the app's settings for automatic reopens. */
+    if(device->Type == DeviceType::Playback && !attrList.empty())
+        device->mLastAttrs.assign(attrList.begin(), attrList.end());
 
     uint numMono{device->NumMonoSources};
     uint numStereo{device->NumStereoSources};
@@ -3053,6 +3057,8 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
 
     {
         std::lock_guard<std::recursive_mutex> listlock{ListLock};
+        /* Auto-reopen patch: a device opened as the default follows it. */
+        device->mFollowDefault = devname.empty();
         auto iter = std::lower_bound(DeviceList.cbegin(), DeviceList.cend(), device.get());
         DeviceList.emplace(iter, device.get());
     }
@@ -3696,3 +3702,176 @@ FORCE_ALIGN ALCenum ALC_APIENTRY alcEventIsSupportedSOFT(ALCenum eventType, ALCe
     alcSetError(nullptr, ALC_INVALID_ENUM);
     return ALC_FALSE;
 }
+
+
+/************************************************
+ * Auto-reopen patch
+ *
+ * When a playback device's output disappears (e.g. Bluetooth headphones
+ * disconnecting), or the system default output changes, move affected
+ * devices onto the current system default output without the app having to
+ * do anything. Devices opened as the default follow the default from the
+ * start; a device opened by name starts following the default once it has
+ * been moved off its lost output.
+ *
+ * Disable with ALSOFT_AUTO_REOPEN=0, or "auto-reopen = false" in the
+ * [general] section of alsoft.ini. Apps that register for default-device
+ * change events through ALC_SOFT_system_events are left alone.
+ ************************************************/
+namespace {
+
+std::atomic<unsigned> gAutoReopenGen{0u};
+std::atomic<bool> gAutoReopenDefaultChanged{false};
+
+bool AutoReopenEnabled() noexcept
+{
+    static const bool enabled{[]() -> bool
+    {
+        if(auto val = al::getenv("ALSOFT_AUTO_REOPEN"))
+            return !(*val == "0" || al::case_compare(*val, "false"sv) == 0
+                || al::case_compare(*val, "off"sv) == 0);
+        return ConfigValueBool({}, {}, "auto-reopen").value_or(true);
+    }()};
+    return enabled;
+}
+
+/* Makes one pass over the open playback devices. Returns true when nothing is
+ * left lost (no further retry needed).
+ */
+bool AutoReopenPass(const bool defaultChanged)
+{
+    std::vector<DeviceRef> targets;
+    {
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
+        for(al::Device *dev : DeviceList)
+        {
+            if(dev->Type != DeviceType::Playback)
+                continue;
+            const bool lost{!dev->Connected.load(std::memory_order_acquire)};
+            if(lost || (defaultChanged && dev->mFollowDefault))
+            {
+                dev->add_ref();
+                targets.emplace_back(dev);
+            }
+        }
+    }
+
+    bool done{true};
+    for(DeviceRef &dev : targets)
+    {
+        std::vector<ALCint> attrs;
+        {
+            std::lock_guard<std::mutex> statelock{dev->StateLock};
+            attrs = dev->mLastAttrs;
+        }
+        const bool haveAttrs{!attrs.empty()};
+        attrs.emplace_back(0);
+
+        const bool wasLost{!dev->Connected.load(std::memory_order_acquire)};
+        if(alcReopenDeviceSOFT(dev.get(), nullptr, haveAttrs ? attrs.data() : nullptr))
+        {
+            {
+                std::lock_guard<std::recursive_mutex> listlock{ListLock};
+                dev->mFollowDefault = true;
+            }
+            TRACE("Auto-reopen: moved device {} to the default output (\"{}\")",
+                voidp{dev.get()}, dev->mDeviceName);
+        }
+        else
+        {
+            TRACE("Auto-reopen: device {} could not be moved yet", voidp{dev.get()});
+            if(wasLost) done = false;
+        }
+    }
+    return done;
+}
+
+void AutoReopenWorker(const unsigned gen)
+{
+    /* Let Windows finish switching endpoints before acting; later events
+     * supersede this run.
+     */
+    auto wait_and_check = [gen](const unsigned ms) -> bool
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{ms});
+        return gAutoReopenGen.load(std::memory_order_acquire) == gen;
+    };
+
+    if(!wait_and_check(150u))
+        return;
+    bool defaultChanged{gAutoReopenDefaultChanged.exchange(false)};
+    /* Retry for a while: a reconnecting Bluetooth device can take a few
+     * seconds to accept streams.
+     */
+    for(int attempt{0};attempt < 10;++attempt)
+    {
+        try {
+            if(AutoReopenPass(defaultChanged))
+                return;
+        }
+        catch(std::exception &e) {
+            ERR("Auto-reopen failed: {}", e.what());
+        }
+        defaultChanged = false;
+        if(!wait_and_check(1000u))
+            return;
+    }
+}
+
+#ifdef _WIN32
+DWORD WINAPI AutoReopenThreadProc(void *param)
+{
+    AutoReopenWorker(static_cast<unsigned>(reinterpret_cast<uintptr_t>(param)));
+
+    /* Release the reference that kept this DLL loaded while we ran. */
+    HMODULE self{};
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+        | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&AutoReopenThreadProc), &self);
+    FreeLibraryAndExitThread(self, 0);
+}
+#endif
+
+} // namespace
+
+namespace alc {
+
+void ScheduleAutoReopen(bool defaultChanged) noexcept
+{
+    if(!AutoReopenEnabled())
+        return;
+    {
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
+        if(DeviceList.empty())
+            return;
+    }
+
+    if(defaultChanged)
+        gAutoReopenDefaultChanged.store(true, std::memory_order_release);
+    const unsigned gen{gAutoReopenGen.fetch_add(1u, std::memory_order_acq_rel) + 1u};
+
+    try {
+#ifdef _WIN32
+        /* Hold a reference to this DLL so it can't be unloaded under the
+         * worker; the worker drops it with FreeLibraryAndExitThread.
+         */
+        HMODULE self{};
+        if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+            reinterpret_cast<LPCWSTR>(&AutoReopenThreadProc), &self))
+            return;
+        HANDLE thread{CreateThread(nullptr, 0, AutoReopenThreadProc,
+            reinterpret_cast<void*>(static_cast<uintptr_t>(gen)), 0, nullptr)};
+        if(!thread)
+            FreeLibrary(self);
+        else
+            CloseHandle(thread);
+#else
+        std::thread{AutoReopenWorker, gen}.detach();
+#endif
+    }
+    catch(std::exception &e) {
+        ERR("Failed to start auto-reopen worker: {}", e.what());
+    }
+}
+
+} // namespace alc

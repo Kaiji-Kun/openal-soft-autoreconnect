@@ -1,3 +1,59 @@
+OpenAL Soft with auto-reconnect
+===============================
+
+This is a fork of [OpenAL Soft](https://github.com/kcat/openal-soft) 1.24.3
+that moves a game's audio to the current Windows default output when its
+output device disappears (for example Bluetooth earbuds disconnecting) or
+when the Windows default output changes. Games that don't handle audio device
+changes themselves no longer go silent until restarted.
+
+**Download:** prebuilt 64-bit and 32-bit `OpenAL32.dll` files are on the
+[Releases](../../releases) page.
+
+### How it behaves
+
+- A game using the "default" device follows the Windows default output.
+- A game using a named device keeps it until that device is lost, then
+  follows the Windows default from then on.
+- The switch happens about a second after Windows reports the change, with
+  retries for ~10 seconds while a reconnecting Bluetooth device settles.
+- The game's own audio settings (sample rate, HRTF etc.) are kept.
+- Apps that register for device-change events through `ALC_SOFT_system_events`
+  are assumed to handle switching themselves and are left alone.
+- A sound playing at the moment a device is lost may stop rather than resume;
+  new sounds play normally.
+
+### Installing in a game
+
+1. In the game's folder, rename the existing `OpenAL32.dll` to `OpenAL32.dll.bak`.
+2. Copy in the matching `OpenAL32.dll` (Win64 for 64-bit games, Win32 for 32-bit).
+3. To undo, delete it and rename the `.bak` back.
+
+Only for games that load OpenAL from a separate `OpenAL32.dll`. Avoid
+swapping DLLs in games with anti-cheat. A game update or Steam "verify files"
+may restore the original.
+
+### Turning it off
+
+Set the environment variable `ALSOFT_AUTO_REOPEN=0`, or add to `alsoft.ini`:
+
+```ini
+[general]
+auto-reopen = false
+```
+
+For a debug log, set `ALSOFT_LOGLEVEL=3` and `ALSOFT_LOGFILE=C:\path\openal.log`
+and look for `Auto-reopen` lines.
+
+### The change
+
+The patch is in `alc/alc.cpp` (worker that reopens devices via
+`alcReopenDeviceSOFT`), `alc/events.cpp` (triggers on playback device
+events), and `alc/device.h` (per-device state). The original OpenAL Soft
+README follows.
+
+---
+
 OpenAL Soft
 ===========
 

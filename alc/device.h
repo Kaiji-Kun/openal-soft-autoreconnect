@@ -99,6 +99,17 @@ struct Device final : public ALCdevice, al::intrusive_ref<al::Device>, DeviceBas
     std::string mVersionOverride;
     std::string mRendererOverride;
 
+    /* Auto-reopen patch: true when this playback device should follow the
+     * system default output (opened as the default device, or moved onto the
+     * default after its own output was lost). Guarded by ListLock.
+     */
+    bool mFollowDefault{false};
+    /* The last non-empty attribute list the app configured this device with
+     * (without the terminating 0), reused when reopening automatically.
+     * Guarded by StateLock.
+     */
+    std::vector<int> mLastAttrs;
+
     explicit Device(DeviceType type);
     ~Device() final;
 

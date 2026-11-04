@@ -42,6 +42,12 @@ inline void *EventUserPtr{};
 
 void Event(EventType eventType, DeviceType deviceType, ALCdevice *device, std::string_view message) noexcept;
 
+/* Auto-reopen patch (implemented in alc.cpp): asks for playback devices that
+ * lost their output, or that follow the system default when it changed, to
+ * be reopened on the current default output shortly.
+ */
+void ScheduleAutoReopen(bool defaultChanged) noexcept;
+
 inline void Event(EventType eventType, DeviceType deviceType, std::string_view message) noexcept
 { Event(eventType, deviceType, nullptr, message); }
 

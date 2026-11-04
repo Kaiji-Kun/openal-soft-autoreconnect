@@ -42,9 +42,18 @@ std::optional<alc::EventType> GetEventType(ALCenum type)
 void Event(EventType eventType, DeviceType deviceType, ALCdevice *device, std::string_view message) noexcept
 {
     auto eventlock = std::unique_lock{EventMutex};
+    /* If the app listens for default-device changes itself, assume it manages
+     * device switching and leave it alone.
+     */
+    const bool appManagesDevices{EventCallback
+        && EventsEnabled.test(al::to_underlying(EventType::DefaultDeviceChanged))};
     if(EventCallback && EventsEnabled.test(al::to_underlying(eventType)))
         EventCallback(EnumFromEventType(eventType), al::to_underlying(deviceType), device,
             static_cast<ALCsizei>(message.length()), message.data(), EventUserPtr);
+    eventlock.unlock();
+
+    if(deviceType == DeviceType::Playback && !appManagesDevices)
+        ScheduleAutoReopen(eventType == EventType::DefaultDeviceChanged);
 }
 
 } // namespace alc
