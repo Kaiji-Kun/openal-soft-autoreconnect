@@ -25,13 +25,26 @@ changes themselves no longer go silent until restarted.
 
 ### Installing in a game
 
-1. In the game's folder, rename the existing `OpenAL32.dll` to `OpenAL32.dll.bak`.
-2. Copy in the matching `OpenAL32.dll` (Win64 for 64-bit games, Win32 for 32-bit).
+Pick the DLL by whether the **game** is 64-bit or 32-bit: `Win64` for 64-bit
+games (most games from the last decade, e.g. X4: Foundations), `Win32` for
+32-bit games.
+
+The "32" in `OpenAL32.dll` is just the traditional file name and does **not**
+mean 32-bit: 64-bit games use a file called `OpenAL32.dll` too.
+
+1. In the game's folder, rename the game's own OpenAL DLL (usually
+   `OpenAL32.dll`) to e.g. `OpenAL32.dll.bak`.
+2. Copy in the DLL from the matching folder, with exactly the same name the
+   game's original had (usually `OpenAL32.dll`).
 3. To undo, delete it and rename the `.bak` back.
 
-Only for games that load OpenAL from a separate `OpenAL32.dll`. Avoid
-swapping DLLs in games with anti-cheat. A game update or Steam "verify files"
-may restore the original.
+Not sure? In Task Manager a 32-bit game shows "(32 bit)" after its name. If
+you pick the wrong one, the game won't start or will have no sound; swap in
+the other.
+
+Only for games that load OpenAL from a separate DLL. Avoid swapping DLLs in
+games with anti-cheat. A game update or Steam "verify files" may restore the
+original.
 
 ### Turning it off
 
