@@ -7,6 +7,10 @@ output device disappears (for example Bluetooth earbuds disconnecting) or
 when the Windows default output changes. Games that don't handle audio device
 changes themselves no longer go silent until restarted.
 
+The auto-reconnect patch was written with Claude (Anthropic's AI) and tested by
+[Kaiji-Kun](https://github.com/Kaiji-Kun). OpenAL Soft itself is by Chris Robinson
+and contributors.
+
 **Download:** prebuilt 64-bit and 32-bit `OpenAL32.dll` files are on the
 [Releases](../../releases) page.
 
