@@ -2740,6 +2740,8 @@ ALC_API ALCenum ALC_APIENTRY alcGetEnumValue(ALCdevice *device, const ALCchar *e
 }
 
 
+namespace { bool AutoReopenEnabled() noexcept; } // auto-reopen patch
+
 ALC_API ALCcontext* ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCint *attrList) noexcept
 {
     /* Explicitly hold the list lock while taking the StateLock in case the
@@ -2784,6 +2786,12 @@ ALC_API ALCcontext* ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCin
         return nullptr;
     }
     context->init();
+    /* Auto-reopen patch: keep sounds paused rather than stopped while the
+     * output is lost, so they resume once the device is moved. The app can
+     * still opt back in with alEnable(AL_STOP_SOURCES_ON_DISCONNECT_SOFT).
+     */
+    if(AutoReopenEnabled())
+        context->mStopVoicesOnDisconnect.store(false);
 
     if(auto volopt = dev->configValue<float>({}, "volume-adjust"))
     {
@@ -3735,30 +3743,81 @@ bool AutoReopenEnabled() noexcept
     return enabled;
 }
 
-/* Makes one pass over the open playback devices. Returns true when nothing is
- * left lost (no further retry needed).
+/* Name of the current system default playback output, with the same prefix
+ * device names carry. Enumerates into a local list so the strings the app may
+ * hold from alcGetString are left untouched.
  */
-bool AutoReopenPass(const bool defaultChanged)
+std::string CurrentDefaultPlaybackName()
 {
-    std::vector<DeviceRef> targets;
+    std::lock_guard<std::recursive_mutex> listlock{ListLock};
+    if(!PlaybackFactory)
+        return {};
+    auto names = PlaybackFactory->enumerate(BackendType::Playback);
+    if(names.empty())
+        return {};
+    return std::string{GetDevicePrefix()} + names.front();
+}
+
+/* True when the device has contexts but isn't actually outputting. */
+bool DeviceStalled(al::Device *dev)
+{
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
+    if(dev->Flags.test(DevicePaused))
+        return false;
+    if(dev->mContexts.load(std::memory_order_acquire)->empty())
+        return false;
+    return dev->mDeviceState != DeviceState::Playing;
+}
+
+/* Makes one pass over the open playback devices, moving any that lost their
+ * output, aren't playing, or follow the default but aren't on it. Returns
+ * true when everything looks settled.
+ */
+bool AutoReopenPass(std::vector<al::Device*> &movedToDefault)
+{
+    const std::string defName{CurrentDefaultPlaybackName()};
+
+    std::vector<DeviceRef> devices;
     {
         std::lock_guard<std::recursive_mutex> listlock{ListLock};
         for(al::Device *dev : DeviceList)
         {
             if(dev->Type != DeviceType::Playback)
                 continue;
-            const bool lost{!dev->Connected.load(std::memory_order_acquire)};
-            if(lost || (defaultChanged && dev->mFollowDefault))
-            {
-                dev->add_ref();
-                targets.emplace_back(dev);
-            }
+            dev->add_ref();
+            devices.emplace_back(dev);
         }
     }
 
-    bool done{true};
-    for(DeviceRef &dev : targets)
+    bool settled{true};
+    for(DeviceRef &dev : devices)
     {
+        const bool lost{!dev->Connected.load(std::memory_order_acquire)};
+        const bool stalled{!lost && DeviceStalled(dev.get())};
+        bool follows{};
+        std::string curName;
+        {
+            std::lock_guard<std::recursive_mutex> listlock{ListLock};
+            follows = dev->mFollowDefault;
+        }
+        {
+            std::lock_guard<std::mutex> statelock{dev->StateLock};
+            curName = dev->mDeviceName;
+        }
+        /* Only chase a name mismatch once per default change, in case names
+         * never line up exactly.
+         */
+        const bool offDefault{follows && !defName.empty() && curName != defName
+            && std::find(movedToDefault.begin(), movedToDefault.end(), dev.get())
+                == movedToDefault.end()};
+
+        if(!lost && !stalled && !offDefault)
+            continue;
+
+        TRACE("Auto-reopen: device {} {} (now \"{}\", default \"{}\")", voidp{dev.get()},
+            lost ? "lost its output" : stalled ? "is not playing" : "is off the default",
+            curName, defName);
+
         std::vector<ALCint> attrs;
         {
             std::lock_guard<std::mutex> statelock{dev->StateLock};
@@ -3767,52 +3826,61 @@ bool AutoReopenPass(const bool defaultChanged)
         const bool haveAttrs{!attrs.empty()};
         attrs.emplace_back(0);
 
-        const bool wasLost{!dev->Connected.load(std::memory_order_acquire)};
-        if(alcReopenDeviceSOFT(dev.get(), nullptr, haveAttrs ? attrs.data() : nullptr))
+        const bool reopened{alcReopenDeviceSOFT(dev.get(), nullptr,
+            haveAttrs ? attrs.data() : nullptr) != ALC_FALSE};
+        if(offDefault)
+            movedToDefault.emplace_back(dev.get());
+
+        /* Reopen can report success but leave the device unusable if the new
+         * output failed to start (common for a Bluetooth device that has only
+         * just connected), so check what actually happened.
+         */
+        const bool ok{reopened && dev->Connected.load(std::memory_order_acquire)
+            && !DeviceStalled(dev.get())};
+        if(ok)
         {
-            {
-                std::lock_guard<std::recursive_mutex> listlock{ListLock};
-                dev->mFollowDefault = true;
-            }
-            TRACE("Auto-reopen: moved device {} to the default output (\"{}\")",
-                voidp{dev.get()}, dev->mDeviceName);
+            std::lock_guard<std::recursive_mutex> listlock{ListLock};
+            dev->mFollowDefault = true;
+            TRACE("Auto-reopen: device {} now on \"{}\"", voidp{dev.get()}, dev->mDeviceName);
         }
         else
         {
-            TRACE("Auto-reopen: device {} could not be moved yet", voidp{dev.get()});
-            if(wasLost) done = false;
+            TRACE("Auto-reopen: device {} not ready yet, will retry", voidp{dev.get()});
+            settled = false;
         }
     }
-    return done;
+    return settled;
 }
 
 void AutoReopenWorker(const unsigned gen)
 {
-    /* Let Windows finish switching endpoints before acting; later events
-     * supersede this run.
-     */
     auto wait_and_check = [gen](const unsigned ms) -> bool
     {
         std::this_thread::sleep_for(std::chrono::milliseconds{ms});
         return gAutoReopenGen.load(std::memory_order_acquire) == gen;
     };
 
-    if(!wait_and_check(150u))
-        return;
-    bool defaultChanged{gAutoReopenDefaultChanged.exchange(false)};
-    /* Retry for a while: a reconnecting Bluetooth device can take a few
-     * seconds to accept streams.
+    /* Give Windows a moment to finish switching endpoints; a newer event
+     * supersedes this run.
      */
-    for(int attempt{0};attempt < 10;++attempt)
+    if(!wait_and_check(300u))
+        return;
+    gAutoReopenDefaultChanged.store(false);
+
+    /* Keep checking for 30 seconds: Bluetooth devices can take a while to
+     * accept streams, and may briefly expose their hands-free endpoint as
+     * the default before the stereo one.
+     */
+    std::vector<al::Device*> movedToDefault;
+    for(int pass{0};pass < 30;++pass)
     {
         try {
-            if(AutoReopenPass(defaultChanged))
+            if(AutoReopenPass(movedToDefault) && pass >= 4)
                 return;
         }
         catch(std::exception &e) {
             ERR("Auto-reopen failed: {}", e.what());
         }
-        defaultChanged = false;
         if(!wait_and_check(1000u))
             return;
     }
@@ -3838,13 +3906,11 @@ namespace alc {
 
 void ScheduleAutoReopen(bool defaultChanged) noexcept
 {
+    /* Called on Windows' notification thread: don't block on any locks here,
+     * the worker sorts everything out.
+     */
     if(!AutoReopenEnabled())
         return;
-    {
-        std::lock_guard<std::recursive_mutex> listlock{ListLock};
-        if(DeviceList.empty())
-            return;
-    }
 
     if(defaultChanged)
         gAutoReopenDefaultChanged.store(true, std::memory_order_release);
