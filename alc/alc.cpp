@@ -27,6 +27,7 @@
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlobj.h>
 #endif
 
 #include <algorithm>
@@ -396,6 +397,23 @@ void alc_initconfig()
             gLogLevel = static_cast<LogLevel>(lvl);
     }
 
+#if defined(_WIN32) && defined(AUTOREOPEN_DIAG)
+    /* Diagnostic build: full logging to openal-log.txt on the Desktop. */
+    if(!al::getenv("ALSOFT_LOGLEVEL"))
+        gLogLevel = LogLevel::Trace;
+    if(!al::getenv(L"ALSOFT_LOGFILE"))
+    {
+        PWSTR desktop{};
+        if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, KF_FLAG_DEFAULT, nullptr, &desktop)))
+        {
+            std::wstring fname{desktop};
+            fname += L"\\openal-log.txt";
+            if(FILE *logf{_wfopen(fname.c_str(), L"wt")})
+                gLogFile = logf;
+        }
+        CoTaskMemFree(desktop);
+    }
+#endif
 #ifdef _WIN32
     if(const auto logfile = al::getenv(L"ALSOFT_LOGFILE"))
     {

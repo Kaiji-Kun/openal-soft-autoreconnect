@@ -37,6 +37,8 @@ enum class DistanceModel : unsigned char {
     Inverse, InverseClamped,
     Linear, LinearClamped,
     Exponent, ExponentClamped,
+    /* Egosoft (X4: Foundations) extension: per-source 4-point gain curve. */
+    EgoCurve,
 
     Default = InverseClamped
 };

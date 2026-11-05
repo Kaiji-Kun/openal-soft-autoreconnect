@@ -69,6 +69,9 @@ struct ALsource {
     float InnerAngle{360.0f};
     float OuterAngle{360.0f};
     float RefDistance{1.0f};
+    /* Egosoft extension (AL_EGO_DISTANCE_CURVE 0xD008), zero like the original. */
+    std::array<float,4> EgoCurveDist{};
+    std::array<float,4> EgoCurveGain{};
     float MaxDistance{std::numeric_limits<float>::max()};
     float RolloffFactor{1.0f};
 #if ALSOFT_EAX

@@ -132,6 +132,8 @@ void UpdateSourceProps(const ALsource *source, Voice *voice, ALCcontext *context
     props->InnerAngle = source->InnerAngle;
     props->OuterAngle = source->OuterAngle;
     props->RefDistance = source->RefDistance;
+    props->EgoCurveDist = source->EgoCurveDist;
+    props->EgoCurveGain = source->EgoCurveGain;
     props->MaxDistance = source->MaxDistance;
     props->RolloffFactor = source->RolloffFactor
 #if ALSOFT_EAX
@@ -917,6 +919,7 @@ auto DistanceModelFromALenum = [](auto model) noexcept -> std::optional<Distance
     case AL_LINEAR_DISTANCE_CLAMPED: return DistanceModel::LinearClamped;
     case AL_EXPONENT_DISTANCE: return DistanceModel::Exponent;
     case AL_EXPONENT_DISTANCE_CLAMPED: return DistanceModel::ExponentClamped;
+    case 0xD007 /* AL_EGO_CURVE_DISTANCE */: return DistanceModel::EgoCurve;
     }
     return std::nullopt;
 };
@@ -931,6 +934,7 @@ ALenum ALenumFromDistanceModel(DistanceModel model)
     case DistanceModel::LinearClamped: return AL_LINEAR_DISTANCE_CLAMPED;
     case DistanceModel::Exponent: return AL_EXPONENT_DISTANCE;
     case DistanceModel::ExponentClamped: return AL_EXPONENT_DISTANCE_CLAMPED;
+    case DistanceModel::EgoCurve: return 0xD007;
     }
     throw std::runtime_error{fmt::format("Unexpected distance model: {}",
         int{al::to_underlying(model)})};
@@ -1010,6 +1014,7 @@ enum SourceProp : ALenum {
 
     /* AL_SOFT_UHJ */
     srcStereoMode = AL_STEREO_MODE_SOFT,
+    srcEgoDistanceCurve = 0xD008,
     srcSuperStereoWidth = AL_SUPER_STEREO_WIDTH_SOFT,
 
     /* AL_SOFT_buffer_sub_data */
@@ -1185,6 +1190,8 @@ constexpr ALuint FloatValsByProp(ALenum prop)
 {
     switch(static_cast<SourceProp>(prop))
     {
+    case srcEgoDistanceCurve:
+        return 3;
     case AL_PITCH:
     case AL_GAIN:
     case AL_MIN_GAIN:
@@ -1260,6 +1267,8 @@ constexpr ALuint DoubleValsByProp(ALenum prop)
 {
     switch(static_cast<SourceProp>(prop))
     {
+    case srcEgoDistanceCurve:
+        return 3;
     case AL_PITCH:
     case AL_GAIN:
     case AL_MIN_GAIN:
@@ -1452,6 +1461,24 @@ NOINLINE void SetProperty(ALsource *const Source, ALCcontext *const Context, con
 
         Source->Pitch = static_cast<float>(values[0]);
         return UpdateSourceProps(Source, Context);
+
+    case srcEgoDistanceCurve:
+        /* Egosoft extension: set point (index 0-3) of the source's distance
+         * curve to (distance, gain).
+         */
+        if constexpr(std::is_floating_point_v<T>)
+        {
+            CheckSize(3);
+            CheckValue(std::isfinite(static_cast<float>(values[0]))
+                && std::isfinite(static_cast<float>(values[1]))
+                && std::isfinite(static_cast<float>(values[2])));
+            const auto idx = static_cast<int>(values[0]);
+            CheckValue(idx >= 0 && idx <= 3);
+            Source->EgoCurveDist[static_cast<size_t>(idx)] = static_cast<float>(values[1]);
+            Source->EgoCurveGain[static_cast<size_t>(idx)] = static_cast<float>(values[2]);
+            return CommitAndUpdateSourceProps(Source, Context);
+        }
+        break;
 
     case AL_CONE_INNER_ANGLE:
         CheckSize(1);

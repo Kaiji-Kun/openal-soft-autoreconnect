@@ -132,6 +132,7 @@ constexpr auto DistanceModelFromALenum(ALenum model) noexcept -> std::optional<D
     case AL_LINEAR_DISTANCE_CLAMPED: return DistanceModel::LinearClamped;
     case AL_EXPONENT_DISTANCE: return DistanceModel::Exponent;
     case AL_EXPONENT_DISTANCE_CLAMPED: return DistanceModel::ExponentClamped;
+    case 0xD007 /* AL_EGO_CURVE_DISTANCE */: return DistanceModel::EgoCurve;
     }
     return std::nullopt;
 }
@@ -146,6 +147,7 @@ constexpr auto ALenumFromDistanceModel(DistanceModel model) -> ALenum
     case DistanceModel::LinearClamped: return AL_LINEAR_DISTANCE_CLAMPED;
     case DistanceModel::Exponent: return AL_EXPONENT_DISTANCE;
     case DistanceModel::ExponentClamped: return AL_EXPONENT_DISTANCE_CLAMPED;
+    case DistanceModel::EgoCurve: return 0xD007;
     }
     throw std::runtime_error{"Unexpected distance model "+std::to_string(static_cast<int>(model))};
 }

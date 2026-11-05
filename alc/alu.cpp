@@ -1632,6 +1632,33 @@ void CalcAttnSourceParams(Voice *voice, const VoiceProps *props, const ContextBa
         }
         break;
 
+    case DistanceModel::EgoCurve:
+    {
+        /* Egosoft extension: gain from a 4-point curve, linear between
+         * points, held at the end points. Sends get the same attenuated gain.
+         */
+        const auto &d = props->EgoCurveDist;
+        const auto &g = props->EgoCurveGain;
+        float attn{g[3]};
+        if(d[0] >= Distance)
+            attn = g[0];
+        else
+        {
+            for(size_t i{0};i < 3;++i)
+            {
+                if(d[i+1] > Distance)
+                {
+                    attn = g[i] + (Distance-d[i]) / (d[i+1]-d[i]) * (g[i+1]-g[i]);
+                    break;
+                }
+            }
+        }
+        DryAttnBase = attn;
+        DryGainBase *= attn;
+        WetGainBase.fill(DryGainBase);
+        break;
+    }
+
     case DistanceModel::Disable:
         break;
     }

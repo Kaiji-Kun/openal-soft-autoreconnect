@@ -118,6 +118,9 @@ struct VoiceProps {
     float InnerAngle;
     float OuterAngle;
     float RefDistance;
+    /* Egosoft extension: distance/gain points for DistanceModel::EgoCurve. */
+    std::array<float,4> EgoCurveDist;
+    std::array<float,4> EgoCurveGain;
     float MaxDistance;
     float RolloffFactor;
     std::array<float,3> Position;
