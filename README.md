@@ -1,9 +1,10 @@
 OpenAL for X4: Foundations with Bluetooth auto-reconnect
 =========================================================
 
-A replacement `OpenAL32.dll` for **X4: Foundations only**. It fixes X4's audio
-going silent after Bluetooth headphones disconnect and reconnect (or after the
-Windows default output changes) without restarting the game.
+A replacement `OpenAL32.dll` for **X4: Foundations only**. With the original DLL,
+when Bluetooth headphones disconnect and reconnect, or the Windows default
+output changes, X4 goes silent until it's restarted. With this DLL, the audio
+continues automatically through the new output device.
 
 It is modeled on **Egosoft's custom OpenAL DLL** that ships with X4. Egosoft's
 version is a modified OpenAL Soft 1.19.1 with its own extensions for how sounds
