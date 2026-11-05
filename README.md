@@ -1,58 +1,50 @@
-OpenAL Soft with auto-reconnect
-===============================
+OpenAL for X4: Foundations with Bluetooth auto-reconnect
+=========================================================
 
-This is a fork of [OpenAL Soft](https://github.com/kcat/openal-soft) 1.24.3
-that moves a game's audio to the current Windows default output when its
-output device disappears (for example Bluetooth earbuds disconnecting) or
-when the Windows default output changes. Games that don't handle audio device
-changes themselves no longer go silent until restarted.
+A replacement `OpenAL32.dll` for **X4: Foundations only**. It fixes X4's audio
+going silent after Bluetooth headphones disconnect and reconnect (or after the
+Windows default output changes) without restarting the game.
 
-The auto-reconnect patch was written with Claude (Anthropic's AI) and tested by
-[Kaiji-Kun](https://github.com/Kaiji-Kun). OpenAL Soft itself is by Chris Robinson
-and contributors.
+It is modeled on **Egosoft's custom OpenAL DLL** that ships with X4. Egosoft's
+version is a modified OpenAL Soft 1.19.1 with its own extensions for how sounds
+fade with distance, which X4 relies on. This build is
+[OpenAL Soft](https://github.com/kcat/openal-soft) 1.24.3 with those Egosoft
+extensions recreated, plus the auto-reconnect behaviour. It is not meant for
+other games.
 
-**Download:** prebuilt 64-bit and 32-bit `OpenAL32.dll` files are on the
-[Releases](../../releases) page.
+The patch was written with Claude (Anthropic's AI) and tested by
+[Kaiji-Kun](https://github.com/Kaiji-Kun). OpenAL Soft itself is by Chris
+Robinson and contributors; the original X4 audio extensions are Egosoft's.
+
+**Download:** `X4-OpenAL-autoreconnect.zip` on the [Releases](../../releases)
+page.
+
+### Installing
+
+1. In your X4 folder (e.g. `steamapps\common\X4 Foundations`), rename
+   `OpenAL32.dll` to `OpenAL32.dll.orig`.
+2. Copy `x64\OpenAL32.dll` from the zip into the X4 folder.
+3. In X4's sound options, set the audio device to "system default" for the
+   smoothest switching.
+
+To undo, delete the new `OpenAL32.dll` and rename `OpenAL32.dll.orig` back. A
+game update or Steam "verify files" may restore the original DLL, in which
+case copy the new one in again.
 
 ### How it behaves
 
-- A game using the "default" device follows the Windows default output.
-- A game using a named device keeps it until that device is lost, then
-  follows the Windows default from then on.
-- The switch happens about a second after Windows reports the change, with
-  retries for ~10 seconds while a reconnecting Bluetooth device settles.
-- The game's own audio settings (sample rate, HRTF etc.) are kept.
-- Apps that register for device-change events through `ALC_SOFT_system_events`
-  are assumed to handle switching themselves and are left alone.
-- A sound playing at the moment a device is lost may stop rather than resume;
-  new sounds play normally.
-
-### Installing in a game
-
-Pick the DLL by whether the **game** is 64-bit or 32-bit: `Win64` for 64-bit
-games (most games from the last decade, e.g. X4: Foundations), `Win32` for
-32-bit games.
-
-The "32" in `OpenAL32.dll` is just the traditional file name and does **not**
-mean 32-bit: 64-bit games use a file called `OpenAL32.dll` too.
-
-1. In the game's folder, rename the game's own OpenAL DLL (usually
-   `OpenAL32.dll`) to e.g. `OpenAL32.dll.bak`.
-2. Copy in the DLL from the matching folder, with exactly the same name the
-   game's original had (usually `OpenAL32.dll`).
-3. To undo, delete it and rename the `.bak` back.
-
-Not sure? In Task Manager a 32-bit game shows "(32 bit)" after its name. If
-you pick the wrong one, the game won't start or will have no sound; swap in
-the other.
-
-Only for games that load OpenAL from a separate DLL. Avoid swapping DLLs in
-games with anti-cheat. A game update or Steam "verify files" may restore the
-original.
+- When the output device disappears or the Windows default output changes,
+  X4's audio moves to the current Windows default output about a second later.
+- Sounds pause while there is no output and resume on the new device.
+- For 30 seconds after a change it keeps checking that audio is actually
+  playing on the current default, which covers Bluetooth devices that take a
+  few seconds to become ready.
+- X4's own audio settings are kept.
 
 ### Turning it off
 
-Set the environment variable `ALSOFT_AUTO_REOPEN=0`, or add to `alsoft.ini`:
+Set the environment variable `ALSOFT_AUTO_REOPEN=0`, or create `alsoft.ini` in
+the X4 folder containing:
 
 ```ini
 [general]
@@ -62,12 +54,18 @@ auto-reopen = false
 For a debug log, set `ALSOFT_LOGLEVEL=3` and `ALSOFT_LOGFILE=C:\path\openal.log`
 and look for `Auto-reopen` lines.
 
-### The change
+### The changes
 
-The patch is in `alc/alc.cpp` (worker that reopens devices via
-`alcReopenDeviceSOFT`), `alc/events.cpp` (triggers on playback device
-events), and `alc/device.h` (per-device state). The original OpenAL Soft
-README follows.
+- **Egosoft compatibility** (`alc/alu.cpp`, `al/source.cpp`, `al/state.cpp`,
+  `core/context.h`, `core/voice.h`, `al/source.h`): distance model `0xD007`,
+  where each sound's volume comes from a 4-point distance curve (linear between
+  points, held at the ends), and source property `0xD008` (index, distance,
+  gain) to set the curve's points, matching Egosoft's DLL.
+- **Auto-reconnect** (`alc/alc.cpp`, `alc/events.cpp`, `alc/device.h`): a
+  worker that moves playback devices onto the Windows default via
+  `alcReopenDeviceSOFT` after device events.
+
+The original OpenAL Soft README follows.
 
 ---
 
